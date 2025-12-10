@@ -1,51 +1,92 @@
-| Supported Targets | ESP32 | ESP32-C2 | ESP32-C3 | ESP32-C5 | ESP32-C6 | ESP32-C61 | ESP32-H2 | ESP32-H21 | ESP32-P4 | ESP32-S2 | ESP32-S3 |
-| ----------------- | ----- | -------- | -------- | -------- | -------- | --------- | -------- | --------- | -------- | -------- | -------- |
+## 🧠 1. Arquitectura del Firmware (ESP32)
 
-# Basic I2C Master Example
+El firmware está basado en **ESP-IDF (FreeRTOS)** y diseñado para ser tolerante a fallos eléctricos derivados de picos de consumo WiFi.
 
-(See the README.md file in the upper level 'examples' directory for more information about examples.)
+### ⚙️ Funciones Críticas (`main.c`)
 
-## Overview
+#### `sensor_net_task` (Máquina de Estados)
+Esta es la tarea principal del sistema. A diferencia de un bucle `while` simple, implementa concurrencia no bloqueante:
+1.  **Gestión de Sockets:** Mantiene un socket TCP abierto para recibir comandos de control en tiempo real.
+2.  **Lectura No Bloqueante:** Utiliza `fcntl(sock, F_SETFL, O_NONBLOCK)` para revisar si hay comandos entrantes (`recv`) sin detener el flujo de datos de los sensores.
+3.  **Edge Computing:** Si se selecciona el modo `RMS`, realiza un muestreo de `N` iteraciones para calcular la energía de la señal antes de transmitir, reduciendo el ancho de banda necesario.
 
-This example demonstrates basic usage of I2C driver by reading and writing from a I2C connected sensor:
+#### `process_incoming_command(char *json_str)`
+Parser JSON ligero (basado en `cJSON`) que permite la **reconfiguración en caliente**.
+* **Capacidad:** Cambia el sensor activo, el protocolo de transporte (UDP/TCP) o los parámetros de filtro sin reiniciar el microcontrolador.
+* **Estructura Global:** Actualiza la `struct app_config_t` que gobierna el comportamiento de la tarea principal.
 
-If you have a new I2C application to go (for example, read the temperature data from external sensor with I2C interface), try this as a basic template, then add your own code.
+### 🛡️ Drivers Robustos (`bme688.c`)
 
-## How to use example
+El sensor BME688 es sensible a caídas de tensión (Brownouts) provocadas por la transmisión WiFi. El driver implementa:
 
-### Hardware Required
+* **Auto-Recuperación:** Si la transacción I2C falla con error `0x103` (Timeout), el driver detecta el cuelgue, elimina el dispositivo del bus I2C virtual y reinicia la secuencia de inicialización automáticamente.
+* **Polling de Estado:** En lugar de `vTaskDelay` fijos, el driver consulta el registro `0x1D` hasta que el bit `NEW_DATA` está activo, garantizando la integridad de los datos.
 
-To run this example, you should have an Espressif development board based on a chip listed in supported targets as well as a MPU9250. MPU9250 is a inertial measurement unit, which contains a accelerometer, gyroscope as well as a magnetometer, for more information about it, you can read the [datasheet of the MPU9250 sensor](https://invensense.tdk.com/wp-content/uploads/2015/02/PS-MPU-9250A-01-v1.1.pdf).
+---
 
-#### Pin Assignment
+## 🖥️ Arquitectura de la Interfaz (Python/PyQt5)
 
-**Note:** The following pin assignments are used by default, you can change these in the `menuconfig` .
+La aplicación de escritorio (`gui_raspberry_final.py`) utiliza un patrón de diseño **Productor-Consumidor** para evitar el congelamiento de la interfaz (Lag) ante altas tasas de transferencia.
 
-|                  | SDA             | SCL           |
-| ---------------- | -------------- | -------------- |
-| ESP I2C Master   | I2C_MASTER_SDA | I2C_MASTER_SCL |
-| MPU9250 Sensor   | SDA            | SCL            |
+### 🧵 Hilos y Concurrencia (`NetworkWorker`)
 
-For the actual default value of `I2C_MASTER_SDA` and `I2C_MASTER_SCL` see `Example Configuration` in `menuconfig`.
+* **Multithreading:** Ejecuta dos hilos demonio separados (`tcp_server_thread` y `udp_server_thread`) para escuchar en el puerto 1234 simultáneamente.
+* **Persistencia Atómica:** Escribe los datos entrantes directamente a disco (`JSONL` o `CSV`) utilizando un `threading.Lock` para evitar condiciones de carrera y corrupción de archivos.
+* **Desacople de UI:** No emite señales Qt por cada paquete recibido (lo cual saturaría el Event Loop). En su lugar, actualiza una variable atómica compartida (`self.latest_data`).
 
-**Note:** There's no need to add an external pull-up resistors for SDA/SCL pin, because the driver will enable the internal pull-up resistors.
+### 📊 Renderizado Optimizado (`MainWindow`)
 
-### Build and Flash
+* **QTimer (30 FPS):** Un temporizador consulta los datos del Worker cada 33ms. Esto mantiene la interfaz fluida independientemente de si llegan 10 o 1000 paquetes por segundo.
+* **Buffers Circulares:** Utiliza `collections.deque` con tamaño fijo para almacenar los puntos de la gráfica, optimizando el uso de memoria RAM.
+* **Visualización Dinámica:** La función `setup_graphs()` detecta el tipo de dato entrante y reconstruye los widgets de `PyQtGraph` al vuelo (ej: cambia de 3 ejes para Acelerómetro a 4 gráficos independientes para Temperatura/Humedad/Presión/Gas).
 
-Enter `idf.py -p PORT flash monitor` to build, flash and monitor the project.
+---
 
-(To exit the serial monitor, type ``Ctrl-]``.)
+## 📡 Protocolo de Comunicación (JSON)
 
-See the [Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/latest/get-started/index.html) for full steps to configure and use ESP-IDF to build projects.
+El sistema es agnóstico al transporte (funciona igual sobre TCP o UDP) gracias a una carga útil estandarizada en JSON.
 
-## Example Output
+### Telemetría (ESP32 -> Raspberry)
+{
+  "sensor": "BME688",
+  "type": "RAW",
+  "temp": 25.4,
+  "hum": 60.2,
+  "press": 101325,
+  "gas": 54000
+}
+Control (Raspberry -> ESP32)
+JSON
 
-```bash
-I (328) example: I2C initialized successfully
-I (338) example: WHO_AM_I = 71
-I (338) example: I2C de-initialized successfully
+{
+  "cmd": "config",
+  "sensor": "BMI270",
+  "protocol": "UDP",
+  "type": "RMS",
+  "window_size": 50
+}
+
+
+## 📂 Estructura del Proyecto
+
+```text
+TIC3-Tarea-2/
+├── CMakeLists.txt              # Configuración de compilación global
+├── Kconfig.projbuild           # Menú de configuración (SSID, IP, Puerto)
+├── README.md                   # Documentación del proyecto
+├── main/                       # Código fuente del Firmware (ESP32)
+│   ├── CMakeLists.txt          # Configuración del componente main
+│   ├── main.c                  # Lógica principal, tareas FreeRTOS y JSON
+│   ├── bmi270.c / .h           # Driver para el sensor IMU
+│   ├── bme688.c / .h           # Driver robusto para sensor ambiental
+│   ├── wifi_tcp.c / .h         # Cliente TCP y gestión de conexión WiFi
+│   └── wifi_udp.c / .h         # Cliente UDP para streaming
+└── python_scripts/             # Software del Servidor (Raspberry Pi)
+    └── gui_raspberry_final.py  # Dashboard de control y visualización
 ```
-
-## Troubleshooting
-
-(For any technical queries, please open an [issue](https://github.com/espressif/esp-idf/issues) on GitHub. We will get back to you as soon as possible.)
+![ErOJnebXYAAPMqZ](https://github.com/user-attachments/assets/c1ddbe4e-dcbb-4de1-8404-3e317fbd44d1)
+<br>
+<div align="center">
+  <h1> Gracias por la segunda oportunidad </h1>
+</div>
+<br>
