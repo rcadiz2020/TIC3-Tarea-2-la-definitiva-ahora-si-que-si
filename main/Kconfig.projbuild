@@ -1,0 +1,57 @@
+menu "Configuración del Hardware"
+
+    choice SENSOR_TYPE
+        prompt "Seleccionar Sensor"
+        default SENSOR_BMI270
+        help
+            Elige qué sensor está conectado para la lectura de datos.
+
+        config SENSOR_BMI270
+            bool "Bosch BMI270 (Acelerómetro/Giroscopio)"
+        
+        config SENSOR_BME688
+            bool "Bosch BME688 (Ambiental: Temp/Hum/Gas)"
+    endchoice
+
+endmenu
+
+menu "Configuración de Red del Proyecto"
+
+    config WIFI_SSID
+        string "SSID (Nombre) de tu red Wi-Fi"
+        default "CADIZ"
+        help
+            Introduce el nombre (SSID) de la red Wi-Fi a la que se conectará el ESP32.
+
+    config WIFI_PASSWORD
+        string "Contraseña de tu red Wi-Fi"
+        default "lento6fuego"
+        help
+            Introduce la contraseña de la red Wi-Fi.
+
+    config SERVER_IP
+        string "Dirección IP del Servidor (Raspberry Pi)"
+        default "192.168.1.118"
+        help
+            Introduce la dirección IP del servidor TCP (tu Raspberry Pi) al que el ESP32 enviará los datos.
+
+    config SERVER_PORT
+        int "Puerto del Servidor TCP"
+        default 1234
+        help
+            Introduce el puerto en el que el servidor TCP está escuchando en la Raspberry Pi.
+
+    choice PROTOCOL_TYPE
+        prompt "Protocolo de Transporte"
+        default PROTOCOL_UDP
+        help
+            Selecciona el protocolo para enviar los datos del sensor.
+
+        config PROTOCOL_TCP
+            bool "TCP"
+        
+        config PROTOCOL_UDP
+            bool "UDP"
+    endchoice
+
+endmenu
